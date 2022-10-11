@@ -1,8 +1,11 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const bodyParser = require('body-parser');
 const joi = require('joi');
 const app = express();
 const port = 3000;
+
+app.use(bodyParser.json());
 
 import { Request, Response } from 'express';
 
@@ -39,13 +42,15 @@ function getUserByUsername(name: string): UserEntry | undefined {
 
 function getUserByEmail(email: string): UserEntry | undefined {
   // TODO
-  Object.entries(MEMORY_DB).find(([key, userEntry]) => {
+  let user: UserEntry | undefined = undefined;
+  Object.entries(MEMORY_DB).find(([username, userEntry]) => {
     if (userEntry?.email === email) {
-      return MEMORY_DB[key];
+      user = MEMORY_DB[username];
+      return;
     }
   });
 
-  return undefined;
+  return user;
 }
 
 // Request body -> UserDto
@@ -64,85 +69,83 @@ app.post('/register', (req: Request, res: Response) => {
     type,
     password,
   };
+
   try {
     const schema = joi.object().keys({
       username: joi.string().required().min(3).max(24),
       email: joi.string().required().email(),
-      type: joi.string().required(),
+      type: joi
+        .string()
+        .required()
+        .pattern(/user|admin/),
       password: joi
         .string()
-        .regex('^(?=.*[a-z])(?=.*[A-Z])(?=.*[-+_!@#$%^&*.,?]).+$')
-        .min(3)
+        .required()
+        .min(5)
         .max(24)
-        .required(),
+        .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*[-+_!@#$%^&*.,?]).+$/),
     });
 
-    joi.validate(userDto, schema, (err: any, value: any) => {
-      console.log('value', value);
-      if (err) {
-        return res.status(400).send({
-          message: 'Invalid request data',
-        });
-      }
+    const result = schema.validate(userDto);
+    const error = result?.error;
+    if (error) {
+      return res
+        .status(400)
+        .json({ message: `Invalid request data: ${error}` });
+    }
 
-      if (getUserByUsername(userDto.email)) {
-        return res.status(400).send({
-          message: 'Username is already registered',
-        });
-      }
+    if (getUserByEmail(userDto.email)) {
+      return res.status(400).json({ message: 'Email is already registered' });
+    }
 
-      const salt = bcrypt.genSaltSync(SALT_ROUNDS);
-      const hash = bcrypt.hashSync(password, salt);
+    if (getUserByUsername(userDto.username)) {
+      return res
+        .status(400)
+        .json({ message: 'Username is already registered' });
+    }
 
-      const userEntry: UserEntry = {
-        email: userDto.email,
-        type: userDto.type === 'user' ? 'user' : userDto.type,
-        salt: salt,
-        passwordhash: hash,
-      };
+    const salt = bcrypt.genSaltSync(SALT_ROUNDS);
+    const hash = bcrypt.hashSync(userDto.password, salt);
 
-      MEMORY_DB[userDto.username] = userEntry;
-
-      return res.status(200).send({
-        message: 'User created successfully',
-      });
+    MEMORY_DB[userDto.username] = {
+      email: userDto.email,
+      type: userDto.type,
+      salt: salt,
+      passwordhash: hash,
+    };
+    return res.json({
+      message: 'User created successfully',
     });
   } catch (err) {
-    return res.status(422).send({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 });
 
 // Request body -> { username: string, password: string }
 app.post('/login', (req: Request, res: Response) => {
   // Return 200 if username and password match
-  const { email, password } = req.body;
+  // Return 401 else
+  const { username, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(422).send({ message: 'Must provide email and password' });
+  if (!username || !password) {
+    return res.status(422).json({ message: 'Must provide email and password' });
   }
 
-  const userEntry = getUserByEmail(email);
+  const userEntry = getUserByUsername(username);
   if (!userEntry) {
-    return res.status(422).send({ message: 'Invalid password or email' });
+    return res.status(422).json({ message: 'Invalid password or email' });
   }
 
   try {
     const isValid = bcrypt.compareSync(password, userEntry.passwordhash);
     if (isValid) {
-      return res.status(200).send({
-        message: 'Login success!',
-      });
+      return res.send('Login success!');
     }
   } catch (err) {
-    return res.status(401).send({
-      message: 'Invalid password or email',
-    });
+    return res.status(500).json({ message: `Something went wrong: ${err}` });
   }
 
-  return res.status(401).send({
-    message: 'Invalid password or email',
-  });
-  // Return 401 else
+  return res.status(401).json({ message: 'Invalid password or email' });
 });
 
 app.listen(port, () => {
